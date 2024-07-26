@@ -8,8 +8,9 @@ fi
 
 # Global Variables
 VERBOSE=1
+ZABBIX_AUTH_TOKEN=""
 
-# Internal functions
+# Validation functions
 validate_ip() {
     [ $VERBOSE -eq 1 ] && echo "Validating ip..."
 
@@ -27,7 +28,120 @@ validate_ip() {
     fi
 }
 
+# Parsing functions
+convert_groups_to_json() {
+    local ids="$1"
+    local json=""
+
+    IFS=',' read -r -a array <<< "$ids"
+
+    for id in "${array[@]}"; do
+        json+="{\"groupid\": \"$id\"},"
+    done
+
+    json="${json%,}"
+
+    echo "[ $json ]"
+}
+
+parse_templates() {
+    local ids="$1"
+    local json=""
+
+    IFS=',' read -r -a array <<< "$ids"
+
+    for id in "${array[@]}"; do
+        json+="{\"templateid\": \"$id\"},"
+    done
+
+    json="${json%,}"
+
+    echo "[ $json ]"
+}
+
+# Internal functions
+netmgr_zabbix_login(){
+    ZABBIX_AUTH_TOKEN=$(curl -s -X POST -H 'Content-Type: application/json' -d '{
+        "jsonrpc": "2.0",
+        "method": "user.login",
+        "params": {
+            "username": "'$ZABBIX_USERNAME'",
+            "password": "'$ZABBIX_PASSWORD'"
+        },
+        "id": 1,
+        "auth": null
+    }' $ZABBIX_SERVER_URL | jq -r '.result')
+
+    if [ "$ZABBIX_AUTH_TOKEN" == "null" ] || [ -z "$ZABBIX_AUTH_TOKEN" ]; then
+        echo "Error: Authentication failed"
+        exit 1
+    fi
+    return 0
+}
+
 netmgr_add_host_node(){
+    local hostname = $1
+    local templates = $2
+    local groups = $3
+    local interfaces = $4
+    local desc = $5
+
+    local ip = "0.0.0.0"
+    local port = "0"
+
+    # RESPONSE=$(curl -s -X POST $ZABBIX_URL -H 'Content-Type: application/json' \
+    #     -d '{
+    #         "jsonrpc": "2.0",
+    #         "method": "host.create",
+    #         "params": {
+    #             "host": "'"$hostname"'",
+    #             "interfaces": [
+    #                 {
+    #                     "type": 1,
+    #                     "main": 1,
+    #                     "useip": 1,
+    #                     "ip": "'"$HOST_IP"'",
+    #                     "dns": "",
+    #                     "port": "10050"
+    #                 }
+    #             ],
+    #             "groups": "'"$(parse_groups $groups)"'",
+    #             "templates": "'"$(parse_templates $groups)"'"
+    #         },
+    #         "auth": "'"$ZABBIX_AUTH_TOKEN"'",
+    #         "id": 1
+    #     }')
+
+    # # Parse the response
+    # HOST_ID=$(echo $RESPONSE | jq -r '.result.hostids[0]')
+
+    # if [ -n "$HOST_ID" ]; then
+    #     echo "Host added successfully with ID: $HOST_ID"
+    # else
+    #     echo "Failed to add host: $RESPONSE"
+    # fi
+
+    echo '{
+            "jsonrpc": "2.0",
+            "method": "host.create",
+            "params": {
+                "host": "'"$hostname"'",
+                "interfaces": [
+                    {
+                        "type": 1,
+                        "main": 1,
+                        "useip": 1,
+                        "ip": "'"$HOST_IP"'",
+                        "dns": "",
+                        "port": "10050"
+                    }
+                ],
+                "groups": "'"$(parse_groups $groups)"'",
+                "templates": "'"$(parse_templates $groups)"'"
+            },
+            "auth": "'"$ZABBIX_AUTH_TOKEN"'",
+            "id": 1
+        }'
 
     return 0
 }
@@ -35,7 +149,6 @@ netmgr_add_host_node(){
 netmgr_add_host_file(){
     [ $VERBOSE -eq 1 ] && echo "Adding hosts of node from file=$1..."
     local file="$1"
-    local commands="$2"
     local total=0
     local success=0
 
@@ -44,11 +157,11 @@ netmgr_add_host_file(){
         exit 1
     fi
 
-    while IFS=';' read -r path ip name library method username password; do
-        if [[ -z "$path" || "$path" == "#"* ]]; then
+    while IFS=';' read -r hostname template group interface desc; do
+        if [[ -z "$hostname" || "$hostname" == "#"* ]]; then
             continue
         fi
-        netmgr_add_host_node "$path" "$ip" "$name" "$library" "$method" "$username" "$password" "$commands"
+        netmgr_add_host_node "$hostname" "$templates" "$groups" "$interfaces" "$desc"
         [ $? -eq 0 ] && ((success++))
         ((total++))
 
@@ -70,6 +183,40 @@ Options:
     -c <config>     Specifies configuration file
     -s              Enable silent mode
 "
+}
+
+func_show_groups() {
+    local response
+
+    netmgr_zabbix_login
+    response=$(curl -s -X POST -H 'Content-Type: application/json' -d '{
+        "jsonrpc": "2.0",
+        "method": "hostgroup.get",
+        "params": {
+            "output": ["groupid", "name"]
+        },
+        "id": 2,
+        "auth": "'$ZABBIX_AUTH_TOKEN'"
+    }' $ZABBIX_SERVER_URL)
+    
+    echo $response | jq -r '.result[] | "\(.groupid): \(.name)"'
+}
+
+func_show_templates() {
+    local response
+
+    netmgr_zabbix_login
+    response=$(curl -s -X POST -H 'Content-Type: application/json' -d '{
+        "jsonrpc": "2.0",
+        "method": "template.get",
+        "params": {
+            "output": ["templateid", "name"]
+        },
+        "id": 3,
+        "auth": "'$ZABBIX_AUTH_TOKEN'"
+    }' $ZABBIX_SERVER_URL)
+    
+    echo $response | jq -r '.result[] | "\(.templateid): \(.name)"'
 }
 
 func_add_host(){
@@ -185,8 +332,10 @@ main(){
     action="$1"
 
     case "$action" in
-    "add_host") func_add_host "$@"      ;;
-    *)          func_show_help      ;;
+    "add_host")         func_add_host "$@"          ;;
+    "show_groups")      func_show_groups            ;;
+    "show_templates")   func_show_templates         ;;
+    *)                  func_show_help              ;;
     esac
 }
 
