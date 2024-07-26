@@ -82,7 +82,7 @@ parse_interfaces() {
             "3")
 
                 ;;
-            *)     ;;
+            *)  ;;
             esac
             json+="} "
         fi
@@ -109,7 +109,7 @@ netmgr_zabbix_login(){
 
     if [ "$ZABBIX_AUTH_TOKEN" == "null" ] || [ -z "$ZABBIX_AUTH_TOKEN" ]; then
         echo "Error: Authentication failed"
-        return 1
+        exit 1
     fi
 
     return 0
@@ -120,55 +120,71 @@ netmgr_add_host_node(){
     local templates=$2
     local groups=$3
     local interfaces=$4
-    local desc=$5
+    local host_id
+    local response
 
-    local ip="0.0.0.0"
-    local port="0"
+    local ids="$1"
+    local json=""
 
-    # RESPONSE=$(curl -s -X POST $ZABBIX_URL -H 'Content-Type: application/json' \
-    #     -d '{
-    #         "jsonrpc": "2.0",
-    #         "method": "host.create",
-    #         "params": {
-    #             "host": "'"$hostname"'",
-    #             "interfaces": [
-    #                 {
-    #                     "type": 1,
-    #                     "main": 1,
-    #                     "useip": 1,
-    #                     "ip": "'"$HOST_IP"'",
-    #                     "dns": "",
-    #                     "port": "10050"
-    #                 }
-    #             ],
-    #             "groups": "'"$(parse_groups $groups)"'",
-    #             "templates": "'"$(parse_templates $groups)"'"
-    #         },
-    #         "auth": "'"$ZABBIX_AUTH_TOKEN"'",
-    #         "id": 1
-    #     }')
+    IFS='|' read -r -a array <<< "$interfaces"
+    for id in "${array[@]}"; do
+        IFS=':' read -r ip port <<< "$id"
+        if ! grep -q "$ip;$port" "$NETMGR_ZABBIX_DATA_INTERFACE"; then
+            echo "Error: $ip:$port not found in interface data"
+            echo "Failed to add host: $hostname"
+            return 1
+        fi
+    done
 
-    # # Parse the response
-    # HOST_ID=$(echo $RESPONSE | jq -r '.result.hostids[0]')
-
-    # if [ -n "$HOST_ID" ]; then
-    #     echo "Host added successfully with ID: $HOST_ID"
-    # else
-    #     echo "Failed to add host: $RESPONSE"
-    # fi
-
-    echo '{
+    response=$(curl -s -X POST $ZABBIX_SERVER_URL -H 'Content-Type: application/json' \
+        -d '{
+            "auth": "'"$ZABBIX_AUTH_TOKEN"'",
             "jsonrpc": "2.0",
             "method": "host.create",
             "params": {
                 "host": "'"$hostname"'",
-                "interfaces": "'"$(parse_interfaces $interfaces)"'",
-                "groups": "'"$(parse_groups $groups)"'",
-                "templates": "'"$(parse_templates $groups)"'"
+                "interfaces": '"$(parse_interfaces $interfaces)"',
+                "groups": '"$(parse_groups $groups)"',
+                "templates": '"$(parse_templates $templates)"'
             },
+            "id": 1
+        }')
+
+    # Parse the response
+    echo '{
             "auth": "'"$ZABBIX_AUTH_TOKEN"'",
+            "jsonrpc": "2.0",
+            "method": "host.create",
+            "params": {
+                "host": "'"$hostname"'",
+                "interfaces": '"$(parse_interfaces $interfaces)"',
+                "groups": '"$(parse_groups $groups)"',
+                "templates": '"$(parse_templates $templates)"'
+            },
             "id": 1
         }'
+    echo $response
+    host_id=$(echo $response | jq -r '.result.hostids[0]')
+
+    if [ -n "$host_id" ]; then
+        echo "Host added successfully with ID: $host_id"
+    else
+        echo "Failed to add host: $response"
+    fi
+
+    # echo '{
+    #         "jsonrpc": "2.0",
+    #         "method": "host.create",
+    #         "params": {
+    #             "host": "'"$hostname"'",
+    #             "interfaces": "'"$(parse_interfaces $interfaces)"'",
+    #             "groups": "'"$(parse_groups $groups)"'",
+    #             "templates": "'"$(parse_templates $groups)"'"
+    #         },
+    #         "auth": "'"$ZABBIX_AUTH_TOKEN"'",
+    #         "description": "'"$desc"'"
+    #         "id": 1
+    #     }'
 
     return 0
 }
@@ -184,11 +200,12 @@ netmgr_add_host_file(){
         exit 1
     fi
 
-    while IFS=';' read -r hostname templates groups interfaces desc; do
+    netmgr_zabbix_login
+    while IFS=';' read -r hostname templates groups interfaces; do
         if [[ -z "$hostname" || "$hostname" == "#"* ]]; then
             continue
         fi
-        netmgr_add_host_node "$hostname" "$templates" "$groups" "$interfaces" "$desc"
+        netmgr_add_host_node "$hostname" "$templates" "$groups" "$interfaces"
         [ $? -eq 0 ] && ((success++))
         ((total++))
 
@@ -204,6 +221,9 @@ func_show_help(){
         echo "
 Usage: $0 [-s] [-c config]
 Commands:
+    add_host        Adds network appliances as host on zabbix
+    show_groups     Shows all groups available and its id
+    show_templates  Shows all templates available and its id
 
 Options:
     -h              Shows this help message
@@ -217,13 +237,13 @@ func_show_groups() {
 
     netmgr_zabbix_login
     response=$(curl -s -X POST -H 'Content-Type: application/json' -d '{
+        "auth": "'$ZABBIX_AUTH_TOKEN'",
         "jsonrpc": "2.0",
         "method": "hostgroup.get",
         "params": {
             "output": ["groupid", "name"]
         },
-        "id": 2,
-        "auth": "'$ZABBIX_AUTH_TOKEN'"
+        "id": 2
     }' $ZABBIX_SERVER_URL)
     
     echo $response | jq -r '.result[] | "\(.groupid): \(.name)"'
@@ -234,13 +254,13 @@ func_show_templates() {
 
     netmgr_zabbix_login
     response=$(curl -s -X POST -H 'Content-Type: application/json' -d '{
+        "auth": "'$ZABBIX_AUTH_TOKEN'",
         "jsonrpc": "2.0",
         "method": "template.get",
         "params": {
             "output": ["templateid", "name"]
         },
-        "id": 3,
-        "auth": "'$ZABBIX_AUTH_TOKEN'"
+        "id": 3
     }' $ZABBIX_SERVER_URL)
     
     echo $response | jq -r '.result[] | "\(.templateid): \(.name)"'
@@ -267,11 +287,9 @@ func_add_host(){
 Usage: netmgr_zabbix add_host [-f file path]
 
 Required:
+    -f <file path>      : The path for bulk adding nodes
 
 Example file format at ./var/netmgr_zabbix.data.example
-
-Optional:
-
 " && exit 0;;
         f)    file=$OPTARG        ;;
         esac
