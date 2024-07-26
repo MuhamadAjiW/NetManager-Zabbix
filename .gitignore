@@ -1,0 +1,3 @@
+etc/netmgr_zabbix.conf
+data/netmgr_zabbix.data
+*.ignore
