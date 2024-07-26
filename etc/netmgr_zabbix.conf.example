@@ -8,3 +8,4 @@ ZABBIX_PASSWORD=""
 
 # Netmanager configuration
 NETMGR_BASE_LIB_PATH="../../lib"
+NETMGR_ZABBIX_DATA_INTERFACE="./var/interface.data"

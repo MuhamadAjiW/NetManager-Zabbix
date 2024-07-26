@@ -29,11 +29,11 @@ validate_ip() {
 }
 
 # Parsing functions
-convert_groups_to_json() {
+parse_groups() {
     local ids="$1"
     local json=""
 
-    IFS=',' read -r -a array <<< "$ids"
+    IFS='|' read -r -a array <<< "$ids"
 
     for id in "${array[@]}"; do
         json+="{\"groupid\": \"$id\"},"
@@ -48,10 +48,45 @@ parse_templates() {
     local ids="$1"
     local json=""
 
-    IFS=',' read -r -a array <<< "$ids"
+    IFS='|' read -r -a array <<< "$ids"
 
     for id in "${array[@]}"; do
         json+="{\"templateid\": \"$id\"},"
+    done
+
+    json="${json%,}"
+
+    echo "[ $json ]"
+}
+
+parse_interfaces() {
+    local ids="$1"
+    local json=""
+
+    IFS='|' read -r -a array <<< "$ids"
+
+    for id in "${array[@]}"; do
+        IFS=':' read -r ip port <<< "$id"
+        IFS=';' read -r ip port main type useip dns snmp_version bulk comsec_name max_rep ctx_name sec_level auth auth_pass priv priv_pass <<< "$(grep "$ip;$port" "$NETMGR_ZABBIX_DATA_INTERFACE")"
+        json+="{\"type\": $type, \"main\": $main, \"useip\": $useip, \"ip\": \"$ip\", \"dns\": \"$dns\", \"port\": \"$port\""
+        
+        if [ $type -eq 2 ]; then
+            json+=",\"details\": {\"bulk\": $bulk"
+            case "$snmp_version" in
+            "1")   
+
+                ;;
+            "2")
+
+                ;;
+            "3")
+
+                ;;
+            *)     ;;
+            esac
+            json+="} "
+        fi
+        json+="},"
     done
 
     json="${json%,}"
@@ -74,20 +109,21 @@ netmgr_zabbix_login(){
 
     if [ "$ZABBIX_AUTH_TOKEN" == "null" ] || [ -z "$ZABBIX_AUTH_TOKEN" ]; then
         echo "Error: Authentication failed"
-        exit 1
+        return 1
     fi
+
     return 0
 }
 
 netmgr_add_host_node(){
-    local hostname = $1
-    local templates = $2
-    local groups = $3
-    local interfaces = $4
-    local desc = $5
+    local hostname=$1
+    local templates=$2
+    local groups=$3
+    local interfaces=$4
+    local desc=$5
 
-    local ip = "0.0.0.0"
-    local port = "0"
+    local ip="0.0.0.0"
+    local port="0"
 
     # RESPONSE=$(curl -s -X POST $ZABBIX_URL -H 'Content-Type: application/json' \
     #     -d '{
@@ -126,16 +162,7 @@ netmgr_add_host_node(){
             "method": "host.create",
             "params": {
                 "host": "'"$hostname"'",
-                "interfaces": [
-                    {
-                        "type": 1,
-                        "main": 1,
-                        "useip": 1,
-                        "ip": "'"$HOST_IP"'",
-                        "dns": "",
-                        "port": "10050"
-                    }
-                ],
+                "interfaces": "'"$(parse_interfaces $interfaces)"'",
                 "groups": "'"$(parse_groups $groups)"'",
                 "templates": "'"$(parse_templates $groups)"'"
             },
@@ -157,7 +184,7 @@ netmgr_add_host_file(){
         exit 1
     fi
 
-    while IFS=';' read -r hostname template group interface desc; do
+    while IFS=';' read -r hostname templates groups interfaces desc; do
         if [[ -z "$hostname" || "$hostname" == "#"* ]]; then
             continue
         fi
@@ -167,7 +194,7 @@ netmgr_add_host_file(){
 
     done < "$file"
 
-    echo "Hosts have been added on $success/$total Nodes from $file."
+    echo "Added $success/$total Nodes from $file."
 
     return 0
 }
@@ -233,68 +260,26 @@ func_add_host(){
     local password=""
     local commands=""
 
-    while getopts "h?x:i:f:l:m:u:p:" opt; do
+    while getopts "h?f:" opt; do
         case "$opt" in
         h|\?)
             echo "
-Usage: netmgr exec [-i ip address] or [-f file path] [-x commands]
+Usage: netmgr_zabbix add_host [-f file path]
 
 Required:
-    -x <commands>          : Command to execute on nodes
-    -i <ip address>     : The ip address of the added node
-    or
-    -f <file path>      : The path for bulk adding nodes
 
-Example file format at ./data/wazuh_netmgr.data.example
+Example file format at ./var/netmgr_zabbix.data.example
 
 Optional:
-    -l <library>        : Library used for configuring the network appliance (default is none)
-    -m <method>         : Authentication method
-    -u <username>       : Username for password authentication
-    -p <password>       : Password for password authentication
 
-Authentication Methods:
-    none                : Does not configure the network appliance (default)
-    password            : Uses username and password
 " && exit 0;;
-        i)    ip=$OPTARG          ;;
         f)    file=$OPTARG        ;;
-        l)    library=$OPTARG     ;;
-        m)    method=$OPTARG      ;;
-        u)    username=$OPTARG    ;;
-        p)    password=$OPTARG    ;;
-        x)    commands=$OPTARG    ;;
         esac
     done
     shift $((OPTIND-1))
 
-    if [ -z "$commands" ]; then
-        echo "Error: Missing required arguments. Use -h for help."
-        exit 1 
-    fi
-
     if [ ! -z "$file" ]; then
-        if [ ! -z "$ip" ] || [ ! -z "$library" ] || [ ! -z "$method" ] || [ ! -z "$username" ] || [ ! -z "$password" ] ; then
-            echo "Error: -f flag cannot be used at the same time with singular entry flags"
-            exit 1
-        fi
-        netmgr_exec_file "$file" "$commands"
-        [ $? -ne 0 ] && exit $?
-
-    elif [ ! -z "$ip" ]; then
-        if [ ! -z "$library" ]; then
-            if [ "$method" == "password" ]; then
-                if [ -z "$username" ] || [ -z "$password" ]; then
-                    echo "Error: -u username and -p password are necessary with -m method of password"
-                    exit 1
-                fi
-            fi
-        else 
-            library="none"
-            username="none"
-            password="none"
-        fi
-        netmgr_exec_node "$path" "$ip" "$name" "$library" "$method" "$username" "$password" "$commands"
+        netmgr_add_host_file "$file"
         [ $? -ne 0 ] && exit $?
 
     else
