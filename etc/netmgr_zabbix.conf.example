@@ -1,0 +1,10 @@
+#!/bin/bash
+# Configuration constants for wazuh_netmgr
+
+# Zabbix configuration
+ZABBIX_SERVER_URL="https://example.com/zabbix/api_jsonrpc.php"
+ZABBIX_USERNAME=""
+ZABBIX_PASSWORD=""
+
+# Netmanager configuration
+NETMGR_BASE_LIB_PATH="../../lib"

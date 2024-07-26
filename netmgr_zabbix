@@ -27,49 +27,13 @@ validate_ip() {
     fi
 }
 
-netmgr_exec_node(){
-    [ $VERBOSE -eq 1 ] && echo "Executing commands to node with ip=$2..."
-    local path=$1
-    local ip=$2
-    local name=$3
-    local library=$4
-    local method=$5
-    local username=$6
-    local password=$7
-    local commands=$8
-    local fullpath=""
-    local libpath=""
-
-    if [ -z "$ip" ]; then
-        echo "Error: ip address is required"
-        return 1
-    elif ! validate_ip "$ip"; then
-        echo "Error: ip address $ip is invalid"
-        return 1
-    elif [ "$method" != "none" ]; then
-        [ $VERBOSE -eq 1 ] && echo "Loading node library..."
-        libpath="$NETMGR_LIB_PATH/$library"
-
-        if [ ! -f "$libpath" ]; then
-            echo "Error: Library $libpath does not exist"
-            return 1
-        fi    
-
-        (
-            source "$libpath"
-
-            [ $VERBOSE -eq 1 ] && echo "Gaining access to network appliance..."
-            lib_execute_ssh "$method" "$ip" "$username" "$password" "$commands"
-        )
-        [ $? -ne 0 ] && return $?
-        return 0
-    fi
+netmgr_add_host_node(){
 
     return 0
 }
 
 netmgr_add_host_file(){
-    [ $VERBOSE -eq 1 ] && echo "Executing commands to node from file=$1..."
+    [ $VERBOSE -eq 1 ] && echo "Adding hosts of node from file=$1..."
     local file="$1"
     local commands="$2"
     local total=0
@@ -84,13 +48,13 @@ netmgr_add_host_file(){
         if [[ -z "$path" || "$path" == "#"* ]]; then
             continue
         fi
-        netmgr_exec_node "$path" "$ip" "$name" "$library" "$method" "$username" "$password" "$commands"
+        netmgr_add_host_node "$path" "$ip" "$name" "$library" "$method" "$username" "$password" "$commands"
         [ $? -eq 0 ] && ((success++))
         ((total++))
 
     done < "$file"
 
-    echo "Command has been executed on $success/$total Nodes from $file."
+    echo "Hosts have been added on $success/$total Nodes from $file."
 
     return 0
 }
@@ -100,9 +64,6 @@ func_show_help(){
         echo "
 Usage: $0 [-s] [-c config]
 Commands:
-    exec            Execs commands remotely on network appliances
-    save            Save network appliances configuration on config path
-    restore         Restores network appliances configuration from previously saved config
 
 Options:
     -h              Shows this help message
@@ -198,7 +159,7 @@ Authentication Methods:
 }
 
 main(){
-    local config="./etc/netmgr.conf"
+    local config="./etc/netmgr_zabbix.conf"
     local action=""
 
     # Set opt index
