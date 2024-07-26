@@ -67,20 +67,32 @@ parse_interfaces() {
 
     for id in "${array[@]}"; do
         IFS=':' read -r ip port <<< "$id"
-        IFS=';' read -r ip port main type useip dns snmp_version bulk comsec_name max_rep ctx_name sec_level auth auth_pass priv priv_pass <<< "$(grep "$ip;$port" "$NETMGR_ZABBIX_DATA_INTERFACE")"
+        IFS=';' read -r ip port main type useip dns snmp_version bulk comsec_name max_rep ctx_name sec_level auth_ptcl auth_pass priv_ptcl priv_pass <<< "$(grep "$ip;$port" "$NETMGR_ZABBIX_DATA_INTERFACE")"
         json+="{\"type\": $type, \"main\": $main, \"useip\": $useip, \"ip\": \"$ip\", \"dns\": \"$dns\", \"port\": \"$port\""
         
         if [ $type -eq 2 ]; then
-            json+=",\"details\": {\"bulk\": $bulk"
+            json+=",\"details\": {\"version\": $snmp_version, \"bulk\": $bulk"
             case "$snmp_version" in
             "1")   
-
+                json+=",\"community\": \"$comsec_name\""
                 ;;
             "2")
-
+                json+=",\"community\": \"$comsec_name\",\"max_repetitions\": $max_rep"
                 ;;
             "3")
-
+                json+=",\"securityname\": \"$comsec_name\",\"contextname\": \"$ctx_name\""
+                json+=",\"max_repetitions\": $max_rep,\"securitylevel\": $sec_level"
+                case "$sec_level" in
+                "0");;
+                "1")
+                    json+=",\"authprotocol\": $auth_ptcl,\"authpassphrase\": \"$auth_pass\""
+                    ;;
+                "2")
+                    json+=",\"authprotocol\": $auth_ptcl,\"authpassphrase\": \"$auth_pass\""
+                    json+=",\"privprotocol\": $priv_ptcl,\"privpassphrase\": \"$priv_pass\""
+                    ;;
+                *)  ;;
+                esac
                 ;;
             *)  ;;
             esac
