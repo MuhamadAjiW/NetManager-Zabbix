@@ -67,7 +67,7 @@ parse_interfaces() {
 
     for id in "${array[@]}"; do
         IFS=':' read -r ip port <<< "$id"
-        IFS=';' read -r ip port main type useip dns snmp_version bulk comsec_name max_rep ctx_name sec_level auth_ptcl auth_pass priv_ptcl priv_pass <<< "$(grep "$ip;$port" "$NETMGR_ZABBIX_DATA_INTERFACE")"
+        IFS=',' read -r ip port main type useip dns snmp_version bulk comsec_name max_rep ctx_name sec_level auth_ptcl auth_pass priv_ptcl priv_pass <<< "$(grep "$ip;$port" "$NETMGR_ZABBIX_DATA_INTERFACE")"
         json+="{\"type\": $type, \"main\": $main, \"useip\": $useip, \"ip\": \"$ip\", \"dns\": \"$dns\", \"port\": \"$port\""
         
         if [ $type -eq 2 ]; then
@@ -213,7 +213,7 @@ netmgr_add_host_file(){
     fi
 
     netmgr_zabbix_login
-    while IFS=';' read -r hostname templates groups interfaces; do
+    while IFS=',' read -r hostname templates groups interfaces; do
         if [[ -z "$hostname" || "$hostname" == "#"* ]]; then
             continue
         fi
