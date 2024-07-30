@@ -319,6 +319,39 @@ netmgr_remove_host(){
     return 0
 }
 
+netmgr_set_host_status(){
+    local host_ids=$1
+    local status=$2
+    local response
+
+    local json=""
+    response=$(curl -s -k -X POST $ZABBIX_SERVER_URL -H 'Content-Type: application/json' \
+        -d '{
+        "auth": "'"$ZABBIX_AUTH_TOKEN"'",
+        "jsonrpc": "2.0",
+        "method": "host.update",
+        "params": {
+            "hostid": "'"$host_ids"'",
+            "status": '"$status"'
+        },
+        "id": 1
+    }')
+
+    [ $VERBOSE -eq 1 ] && echo '{
+        "auth": "'"$ZABBIX_AUTH_TOKEN"'",
+        "jsonrpc": "2.0",
+        "method": "host.update",
+        "params": {
+            "hostid": "'"$host_ids"'",
+            "status": '"$status"'
+        },
+        "id": 1
+    }'
+    [ $VERBOSE -eq 1 ] && echo $response
+
+    return 0
+}
+
 netmgr_add_host_file(){
     [ $VERBOSE -eq 1 ] && echo "Adding hosts of node from file=$1..."
     local file="$1"
@@ -356,7 +389,11 @@ func_show_help(){
         echo "
 Usage: $0 [-s] [-c config]
 Commands:
-    add_host        Adds network appliances as host on zabbix
+    add_host        Adds nodes as host on zabbix
+    remove_host     Removes nodes as host on zabbix
+    enable_host     Enable nodes as host on zabbix
+    disable_host    Enable nodes as host on zabbix
+    get_host        Gets host information on zabbix
     show_groups     Shows all groups available and its id
     show_templates  Shows all templates available and its id
 
@@ -597,6 +634,103 @@ Example file format at ./var/netmgr_zabbix.data.example
     echo "Execution complete."
 }
 
+func_set_host_status(){
+    [ $VERBOSE -eq 1 ] && echo "Setting hosts to $RETVAL..."
+
+    # Set opt index
+    OPTIND=2
+
+    local input=""
+    local file=""
+    local hostnames=""
+    local host_ids=""
+    local status=""
+    local command=""
+    local total=0
+    local success=0
+
+    while getopts "h?f:i:" opt; do
+        case "$opt" in
+        h|\?)
+            echo "
+Usage: netmgr_zabbix "$RETVAL"_host [-f file path] [-i hostname]
+
+Required:
+    -f <file path>                : The file for bulk node to $RETVAL
+    -i <hostname>                 : Hostname to $RETVAL
+
+Example file format at ./var/netmgr_zabbix.data.example
+" && exit 0;;
+        f)    file=$OPTARG         ;;
+        i)    input=$OPTARG        ;;
+        esac
+    done
+    shift $((OPTIND-1))
+
+    command=$RETVAL
+    consume_retval
+    [ $command == "enable" ] && status="0"
+    [ $command == "disable" ] && status="1"
+
+    if [ ! -z "$file" ] && [ ! -z "$input" ]; then
+        echo "Error: Single argument cannot be used with file argument."
+        exit 1
+    fi
+
+    if [ ! -z "$file" ]; then
+        [ $VERBOSE -eq 1 ] && echo "Processing file $file"
+        if [ ! -f "$file" ]; then
+            echo "Error: File $file not found"
+            exit 1
+        fi
+
+        while IFS=',' read -r hostname templates groups interfaces; do
+            if [[ -z "$hostname" || "$hostname" == "#"* ]]; then
+                continue
+            fi
+            hostnames+="\"$hostname\","
+
+        done < "$file"
+
+        if [ -z "$hostnames" ]; then
+            echo "Error: file does not contain hostnames"
+            exit 1
+        fi
+
+        hostnames=${hostnames%,}
+        netmgr_get_host "$hostnames"
+        [ $? -ne 0 ] && exit $?
+        
+        host_ids=$(echo "$RETVAL" | jq -r '.result[].hostid')        
+        while read -r host_id; do
+            netmgr_set_host_status "$host_id" "$status"
+            [ $? -eq 0 ] && ((success++))
+            ((total++))
+        done <<< $host_ids
+        
+        echo "$success/$total Nodes from $file."
+        consume_retval
+        exit 0
+
+    elif [ ! -z "$input" ]; then
+        [ $VERBOSE -eq 1 ] && echo "Processing hostname $input"
+        netmgr_get_host "\"$input\""
+        [ $? -ne 0 ] && exit $?
+
+        host_ids=$(echo $RETVAL | jq -r '.result[].hostid' | paste -sd, -)
+        consume_retval
+
+        netmgr_set_host_status "$host_ids" "$status"
+        [ $? -ne 0 ] && exit $?
+    
+    else
+        echo "Error: Missing required arguments. Use -h for help."
+        exit 1
+    fi
+
+    echo "Execution complete."
+}
+
 main(){
     local config="./etc/netmgr_zabbix.conf"
     local action=""
@@ -626,21 +760,29 @@ main(){
     case "$action" in
     "get_host")         
         netmgr_zabbix_login
-        func_get_host "$@"       ;;
+        func_get_host "$@"          ;;
     "add_host")         
         netmgr_zabbix_login
-        func_add_host "$@"       ;;
+        func_add_host "$@"          ;;
+    "enable_host")         
+        netmgr_zabbix_login
+        RETVAL="enable"
+        func_set_host_status "$@"   ;;
+    "disable_host")         
+        netmgr_zabbix_login
+        RETVAL="disable"
+        func_set_host_status "$@"   ;;
     "remove_host")      
         netmgr_zabbix_login
-        func_remove_host "$@"    ;;
+        func_remove_host "$@"       ;;
     "show_groups")      
         netmgr_zabbix_login
-        func_show_groups         ;;
+        func_show_groups            ;;
     "show_templates")   
         netmgr_zabbix_login
-        func_show_templates      ;;
+        func_show_templates         ;;
     *)                  
-        func_show_help           ;;
+        func_show_help              ;;
     esac
 }
 
