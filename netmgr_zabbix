@@ -9,6 +9,7 @@ fi
 # Global Variables
 VERBOSE=1
 ZABBIX_AUTH_TOKEN=""
+RETVAL=""
 
 # Validation functions
 validate_ip() {
@@ -26,6 +27,10 @@ validate_ip() {
     else
         return 1  # Invalid IP format
     fi
+}
+
+consume_retval() {
+    RETVAL=""
 }
 
 # Parsing functions
@@ -61,13 +66,14 @@ parse_templates() {
 
 parse_interfaces() {
     local ids="$1"
+    local int_file="$2"
     local json=""
 
     IFS='|' read -r -a array <<< "$ids"
 
     for id in "${array[@]}"; do
         IFS=':' read -r ip port <<< "$id"
-        IFS=',' read -r ip port main type useip dns snmp_version bulk comsec_name max_rep ctx_name sec_level auth_ptcl auth_pass priv_ptcl priv_pass <<< "$(grep "$ip;$port" "$NETMGR_ZABBIX_DATA_INTERFACE")"
+        IFS=',' read -r ip port main type useip dns snmp_version bulk comsec_name max_rep ctx_name sec_level auth_ptcl auth_pass priv_ptcl priv_pass <<< "$(grep "$ip,$port" "$int_file")"
         json+="{\"type\": $type, \"main\": $main, \"useip\": $useip, \"ip\": \"$ip\", \"dns\": \"$dns\", \"port\": \"$port\""
         
         if [ $type -eq 2 ]; then
@@ -108,7 +114,13 @@ parse_interfaces() {
 
 # Internal functions
 netmgr_zabbix_login(){
-    ZABBIX_AUTH_TOKEN=$(curl -s -X POST -H 'Content-Type: application/json' -d '{
+    [ $VERBOSE -eq 1 ] && echo "Logging into zabbix..."
+
+    if [ ! -z "$ZABBIX_AUTH_TOKEN" ]; then
+        [ $VERBOSE -eq 1 ] && echo "Skipping... Has already logged in before"
+    fi
+
+    ZABBIX_AUTH_TOKEN=$(curl -s -k -X POST -H 'Content-Type: application/json' -d '{
         "jsonrpc": "2.0",
         "method": "user.login",
         "params": {
@@ -132,51 +144,55 @@ netmgr_add_host_node(){
     local templates=$2
     local groups=$3
     local interfaces=$4
+    local int_file=$5
     local host_id
     local response
 
     local ids="$1"
     local json=""
 
+    echo "Adding host $hostname"
+
     IFS='|' read -r -a array <<< "$interfaces"
     for id in "${array[@]}"; do
-        IFS=':' read -r ip port <<< "$id"
-        if ! grep -q "$ip;$port" "$NETMGR_ZABBIX_DATA_INTERFACE"; then
+        IFS=':' read -r ip port <<< "$id"  
+        echo "$ip $port"
+        if ! grep -q "$ip,$port" "$int_file"; then
             echo "Error: $ip:$port not found in interface data"
             echo "Failed to add host: $hostname"
             return 1
         fi
     done
 
-    response=$(curl -s -X POST $ZABBIX_SERVER_URL -H 'Content-Type: application/json' \
+    response=$(curl -s -k -X POST $ZABBIX_SERVER_URL -H 'Content-Type: application/json' \
         -d '{
             "auth": "'"$ZABBIX_AUTH_TOKEN"'",
             "jsonrpc": "2.0",
             "method": "host.create",
             "params": {
                 "host": "'"$hostname"'",
-                "interfaces": '"$(parse_interfaces $interfaces)"',
+                "interfaces": '"$(parse_interfaces $interfaces $int_file)"',
                 "groups": '"$(parse_groups $groups)"',
                 "templates": '"$(parse_templates $templates)"'
             },
             "id": 1
         }')
 
-    # Parse the response
-    echo '{
+    [ $VERBOSE -eq 1 ] && echo '{
             "auth": "'"$ZABBIX_AUTH_TOKEN"'",
             "jsonrpc": "2.0",
             "method": "host.create",
             "params": {
                 "host": "'"$hostname"'",
-                "interfaces": '"$(parse_interfaces $interfaces)"',
+                "interfaces": '"$(parse_interfaces $interfaces $int_file)"',
                 "groups": '"$(parse_groups $groups)"',
                 "templates": '"$(parse_templates $templates)"'
             },
             "id": 1
         }'
-    echo $response
+    [ $VERBOSE -eq 1 ] && echo $response
     host_id=$(echo $response | jq -r '.result.hostids[0]')
+    echo "$host_id,$hostname" >> "output"
 
     if [ -n "$host_id" ]; then
         echo "Host added successfully with ID: $host_id"
@@ -204,11 +220,17 @@ netmgr_add_host_node(){
 netmgr_add_host_file(){
     [ $VERBOSE -eq 1 ] && echo "Adding hosts of node from file=$1..."
     local file="$1"
+    local int_file="$2"
     local total=0
     local success=0
 
     if [ ! -f "$file" ]; then
         echo "Error: File $file not found"
+        exit 1
+    fi
+    
+    if [ ! -f "$int_file" ]; then
+        echo "Error: File $int_file not found"
         exit 1
     fi
 
@@ -217,7 +239,126 @@ netmgr_add_host_file(){
         if [[ -z "$hostname" || "$hostname" == "#"* ]]; then
             continue
         fi
-        netmgr_add_host_node "$hostname" "$templates" "$groups" "$interfaces"
+        netmgr_add_host_node "$hostname" "$templates" "$groups" "$interfaces" "$int_file"
+        [ $? -eq 0 ] && ((success++))
+        ((total++))
+
+    done < "$file"
+
+    echo "Added $success/$total Nodes from $file."
+
+    return 0
+}
+
+netmgr_get_host(){
+    local hostname=$1
+    local response
+
+    local json=""
+    response=$(curl -s -k -X POST $ZABBIX_SERVER_URL -H 'Content-Type: application/json' \
+        -d '{
+            "auth": "'"$ZABBIX_AUTH_TOKEN"'",
+            "jsonrpc": "2.0",
+            "method": "host.get",
+            "params": {
+                "filter": {
+                    "host": ['"$hostname"']
+                }
+            },
+            "id": 1
+        }')
+
+    [ $VERBOSE -eq 1 ] && echo '{
+            "auth": "'"$ZABBIX_AUTH_TOKEN"'",
+            "jsonrpc": "2.0",
+            "method": "host.get",
+            "params": {
+                "filter": {
+                    "host": ['"$hostname"']
+                }
+            },
+            "id": 1
+        }'
+    host_count=$(echo $response | jq '.result | length')
+    # host_ids=$(echo $response | jq -r '.result[].hostid' | paste -sd, -)
+
+    if [ "$host_count" -ne 0 ]; then
+        echo "Host fetched successfully: $host_count"
+        RETVAL=$response
+        return 0
+    else
+        echo "Failed to fetch host: $response"
+        return 1
+    fi
+}
+
+netmgr_remove_host(){
+    local host_id=$1
+    local response
+
+    local json=""
+    response=$(curl -s -k -X POST $ZABBIX_SERVER_URL -H 'Content-Type: application/json' \
+        -d '{
+            "auth": "'"$ZABBIX_AUTH_TOKEN"'",
+            "jsonrpc": "2.0",
+            "method": "host.create",
+            "params": {
+                "host": "'"$hostname"'",
+                "interfaces": '"$(parse_interfaces $interfaces $int_file)"',
+                "groups": '"$(parse_groups $groups)"',
+                "templates": '"$(parse_templates $templates)"'
+            },
+            "id": 1
+        }')
+
+    echo '{
+            "auth": "'"$ZABBIX_AUTH_TOKEN"'",
+            "jsonrpc": "2.0",
+            "method": "host.create",
+            "params": {
+                "host": "'"$hostname"'",
+                "interfaces": '"$(parse_interfaces $interfaces $int_file)"',
+                "groups": '"$(parse_groups $groups)"',
+                "templates": '"$(parse_templates $templates)"'
+            },
+            "id": 1
+        }'
+    echo $response
+    host_id=$(echo $response | jq -r '.result.hostids[0]')
+    echo "$host_id,$hostname" >> "output"
+
+    if [ -n "$host_id" ]; then
+        echo "Host added successfully with ID: $host_id"
+    else
+        echo "Failed to add host: $response"
+    fi
+
+    return 0
+}
+
+netmgr_add_host_file(){
+    [ $VERBOSE -eq 1 ] && echo "Adding hosts of node from file=$1..."
+    local file="$1"
+    local int_file="$2"
+    local total=0
+    local success=0
+
+    if [ ! -f "$file" ]; then
+        echo "Error: File $file not found"
+        exit 1
+    fi
+    
+    if [ ! -f "$int_file" ]; then
+        echo "Error: File $int_file not found"
+        exit 1
+    fi
+
+    netmgr_zabbix_login
+    while IFS=',' read -r hostname templates groups interfaces; do
+        if [[ -z "$hostname" || "$hostname" == "#"* ]]; then
+            continue
+        fi
+        netmgr_add_host_node "$hostname" "$templates" "$groups" "$interfaces" "$int_file"
         [ $? -eq 0 ] && ((success++))
         ((total++))
 
@@ -248,7 +389,7 @@ func_show_groups() {
     local response
 
     netmgr_zabbix_login
-    response=$(curl -s -X POST -H 'Content-Type: application/json' -d '{
+    response=$(curl -s -k -X POST -H 'Content-Type: application/json' -d '{
         "auth": "'$ZABBIX_AUTH_TOKEN'",
         "jsonrpc": "2.0",
         "method": "hostgroup.get",
@@ -265,7 +406,7 @@ func_show_templates() {
     local response
 
     netmgr_zabbix_login
-    response=$(curl -s -X POST -H 'Content-Type: application/json' -d '{
+    response=$(curl -s -k -X POST -H 'Content-Type: application/json' -d '{
         "auth": "'$ZABBIX_AUTH_TOKEN'",
         "jsonrpc": "2.0",
         "method": "template.get",
@@ -279,39 +420,114 @@ func_show_templates() {
 }
 
 func_add_host(){
-    [ $VERBOSE -eq 1 ] && echo "Executing command on nodes..."
+    [ $VERBOSE -eq 1 ] && echo "Adding hosts..."
 
     # Set opt index
     OPTIND=2
 
     local ip=""
     local file=""
+    local int_file=""
     local library=""
     local method=""
     local username=""
     local password=""
     local commands=""
 
-    while getopts "h?f:" opt; do
+    while getopts "h?f:i:" opt; do
         case "$opt" in
         h|\?)
             echo "
-Usage: netmgr_zabbix add_host [-f file path]
+Usage: netmgr_zabbix add_host [-f file path] [-i interface file path]
 
 Required:
-    -f <file path>      : The path for bulk adding nodes
+    -f <file path>                : The file for bulk adding nodes
+    -i <interface file path>      : The file containing interface data
 
 Example file format at ./var/netmgr_zabbix.data.example
 " && exit 0;;
-        f)    file=$OPTARG        ;;
+        f)    file=$OPTARG            ;;
+        i)    int_file=$OPTARG        ;;
         esac
     done
     shift $((OPTIND-1))
 
-    if [ ! -z "$file" ]; then
-        netmgr_add_host_file "$file"
+    if [ ! -z "$file" ] && [ ! -z "$int_file" ]; then
+        netmgr_add_host_file "$file" "$int_file"
         [ $? -ne 0 ] && exit $?
 
+    else
+        echo "Error: Missing required arguments. Use -h for help."
+        exit 1
+    fi
+
+    echo "Execution complete."
+}
+
+func_get_host(){
+    [ $VERBOSE -eq 1 ] && echo "Fetching host informations..."
+
+    # Set opt index
+    OPTIND=2
+
+    local input=""
+    local file=""
+    local hostnames=""
+
+    while getopts "h?f:i:" opt; do
+        case "$opt" in
+        h|\?)
+            echo "
+Usage: netmgr_zabbix get_host [-f file path] [-i hostname]
+
+Required:
+    -f <file path>                : The file for bulk fetching nodes
+    -i <hostname>                 : Hostname to fetch
+
+Example file format at ./var/netmgr_zabbix.data.example
+" && exit 0;;
+        f)    file=$OPTARG            ;;
+        i)    input=$OPTARG        ;;
+        esac
+    done
+    shift $((OPTIND-1))
+
+    if [ ! -z "$file" ] && [ ! -z "$input" ]; then
+        echo "Error: Single argument cannot be used with file argument."
+        exit 1
+    fi
+
+    if [ ! -z "$file" ]; then
+        [ $VERBOSE -eq 1 ] && echo "Processing file $file"
+        if [ ! -f "$file" ]; then
+            echo "Error: File $file not found"
+            exit 1
+        fi
+
+        netmgr_zabbix_login
+        while IFS=',' read -r hostname templates groups interfaces; do
+            if [[ -z "$hostname" || "$hostname" == "#"* ]]; then
+                continue
+            fi
+            hostnames+="\"$hostname\","
+
+        done < "$file"
+
+        if [ -z "$hostnames" ]; then
+            echo "Error: file does not contain hostnames"
+            exit 1
+        fi
+
+        hostnames=${hostnames%,}
+        netmgr_get_host "$hostnames"
+        [ $? -ne 0 ] && exit $?
+
+    elif [ ! -z "$input" ]; then
+        [ $VERBOSE -eq 1 ] && echo "Processing hostname $input"
+        netmgr_zabbix_login
+        netmgr_get_host "\"$input\""
+        [ $? -ne 0 ] && exit $?
+    
     else
         echo "Error: Missing required arguments. Use -h for help."
         exit 1
@@ -347,7 +563,9 @@ main(){
     action="$1"
 
     case "$action" in
+    "get_host")         func_get_host "$@"          ;;
     "add_host")         func_add_host "$@"          ;;
+    "remove_host")         func_remove_host "$@"    ;;
     "show_groups")      func_show_groups            ;;
     "show_templates")   func_show_templates         ;;
     *)                  func_show_help              ;;

@@ -1,6 +1,7 @@
 etc/netmgr_zabbix.conf
 var/*
 *.ignore
+output
 
 !*.gitkeep
 !var/*.example
