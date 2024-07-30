@@ -234,7 +234,6 @@ netmgr_add_host_file(){
         exit 1
     fi
 
-    netmgr_zabbix_login
     while IFS=',' read -r hostname templates groups interfaces; do
         if [[ -z "$hostname" || "$hostname" == "#"* ]]; then
             continue
@@ -280,11 +279,11 @@ netmgr_get_host(){
             "id": 1
         }'
     host_count=$(echo $response | jq '.result | length')
-    # host_ids=$(echo $response | jq -r '.result[].hostid' | paste -sd, -)
 
     if [ "$host_count" -ne 0 ]; then
-        echo "Host fetched successfully: $host_count"
         RETVAL=$response
+        echo "$RETVAL"
+        echo "Host fetched successfully: $host_count"
         return 0
     else
         echo "Failed to fetch host: $response"
@@ -293,46 +292,30 @@ netmgr_get_host(){
 }
 
 netmgr_remove_host(){
-    local host_id=$1
+    local host_ids=$1
     local response
 
     local json=""
     response=$(curl -s -k -X POST $ZABBIX_SERVER_URL -H 'Content-Type: application/json' \
         -d '{
-            "auth": "'"$ZABBIX_AUTH_TOKEN"'",
-            "jsonrpc": "2.0",
-            "method": "host.create",
-            "params": {
-                "host": "'"$hostname"'",
-                "interfaces": '"$(parse_interfaces $interfaces $int_file)"',
-                "groups": '"$(parse_groups $groups)"',
-                "templates": '"$(parse_templates $templates)"'
-            },
-            "id": 1
-        }')
+        "auth": "'"$ZABBIX_AUTH_TOKEN"'",
+        "jsonrpc": "2.0",
+        "method": "host.delete",
+        "params": ['"$host_ids"'],
+        "id": 1
+    }')
 
-    echo '{
-            "auth": "'"$ZABBIX_AUTH_TOKEN"'",
-            "jsonrpc": "2.0",
-            "method": "host.create",
-            "params": {
-                "host": "'"$hostname"'",
-                "interfaces": '"$(parse_interfaces $interfaces $int_file)"',
-                "groups": '"$(parse_groups $groups)"',
-                "templates": '"$(parse_templates $templates)"'
-            },
-            "id": 1
-        }'
-    echo $response
-    host_id=$(echo $response | jq -r '.result.hostids[0]')
-    echo "$host_id,$hostname" >> "output"
+    [ $VERBOSE -eq 1 ] && echo '{
+        "auth": "'"$ZABBIX_AUTH_TOKEN"'",
+        "jsonrpc": "2.0",
+        "method": "host.delete",
+        "params": ['"$host_ids"'],
+        "id": 1
+    }'
+    [ $VERBOSE -eq 1 ] && echo $response
+    host_count=$(echo $response | jq '.result.hostids | length')
 
-    if [ -n "$host_id" ]; then
-        echo "Host added successfully with ID: $host_id"
-    else
-        echo "Failed to add host: $response"
-    fi
-
+    echo "$host_count host removed"
     return 0
 }
 
@@ -353,7 +336,6 @@ netmgr_add_host_file(){
         exit 1
     fi
 
-    netmgr_zabbix_login
     while IFS=',' read -r hostname templates groups interfaces; do
         if [[ -z "$hostname" || "$hostname" == "#"* ]]; then
             continue
@@ -388,7 +370,6 @@ Options:
 func_show_groups() {
     local response
 
-    netmgr_zabbix_login
     response=$(curl -s -k -X POST -H 'Content-Type: application/json' -d '{
         "auth": "'$ZABBIX_AUTH_TOKEN'",
         "jsonrpc": "2.0",
@@ -405,7 +386,6 @@ func_show_groups() {
 func_show_templates() {
     local response
 
-    netmgr_zabbix_login
     response=$(curl -s -k -X POST -H 'Content-Type: application/json' -d '{
         "auth": "'$ZABBIX_AUTH_TOKEN'",
         "jsonrpc": "2.0",
@@ -504,7 +484,6 @@ Example file format at ./var/netmgr_zabbix.data.example
             exit 1
         fi
 
-        netmgr_zabbix_login
         while IFS=',' read -r hostname templates groups interfaces; do
             if [[ -z "$hostname" || "$hostname" == "#"* ]]; then
                 continue
@@ -524,8 +503,90 @@ Example file format at ./var/netmgr_zabbix.data.example
 
     elif [ ! -z "$input" ]; then
         [ $VERBOSE -eq 1 ] && echo "Processing hostname $input"
-        netmgr_zabbix_login
         netmgr_get_host "\"$input\""
+        [ $? -ne 0 ] && exit $?
+    
+    else
+        echo "Error: Missing required arguments. Use -h for help."
+        exit 1
+    fi
+
+    echo "Execution complete."
+}
+
+func_remove_host(){
+    [ $VERBOSE -eq 1 ] && echo "Removing hosts..."
+
+    # Set opt index
+    OPTIND=2
+
+    local input=""
+    local file=""
+    local hostnames=""
+    local host_ids=""
+
+    while getopts "h?f:i:" opt; do
+        case "$opt" in
+        h|\?)
+            echo "
+Usage: netmgr_zabbix remove_host [-f file path] [-i hostname]
+
+Required:
+    -f <file path>                : The file for bulk node removal
+    -i <hostname>                 : Hostname to remove
+
+Example file format at ./var/netmgr_zabbix.data.example
+" && exit 0;;
+        f)    file=$OPTARG            ;;
+        i)    input=$OPTARG        ;;
+        esac
+    done
+    shift $((OPTIND-1))
+
+    if [ ! -z "$file" ] && [ ! -z "$input" ]; then
+        echo "Error: Single argument cannot be used with file argument."
+        exit 1
+    fi
+
+    if [ ! -z "$file" ]; then
+        [ $VERBOSE -eq 1 ] && echo "Processing file $file"
+        if [ ! -f "$file" ]; then
+            echo "Error: File $file not found"
+            exit 1
+        fi
+
+        while IFS=',' read -r hostname templates groups interfaces; do
+            if [[ -z "$hostname" || "$hostname" == "#"* ]]; then
+                continue
+            fi
+            hostnames+="\"$hostname\","
+
+        done < "$file"
+
+        if [ -z "$hostnames" ]; then
+            echo "Error: file does not contain hostnames"
+            exit 1
+        fi
+
+        hostnames=${hostnames%,}
+        netmgr_get_host "$hostnames"
+        [ $? -ne 0 ] && exit $?
+        
+        host_ids=$(echo $RETVAL | jq -r '.result[].hostid' | paste -sd, -)
+        consume_retval
+        
+        netmgr_remove_host "$host_ids"
+        [ $? -ne 0 ] && exit $?
+
+    elif [ ! -z "$input" ]; then
+        [ $VERBOSE -eq 1 ] && echo "Processing hostname $input"
+        netmgr_get_host "\"$input\""
+        [ $? -ne 0 ] && exit $?
+
+        host_ids=$(echo $RETVAL | jq -r '.result[].hostid' | paste -sd, -)
+        consume_retval
+
+        netmgr_remove_host "$host_ids"
         [ $? -ne 0 ] && exit $?
     
     else
@@ -563,12 +624,23 @@ main(){
     action="$1"
 
     case "$action" in
-    "get_host")         func_get_host "$@"          ;;
-    "add_host")         func_add_host "$@"          ;;
-    "remove_host")         func_remove_host "$@"    ;;
-    "show_groups")      func_show_groups            ;;
-    "show_templates")   func_show_templates         ;;
-    *)                  func_show_help              ;;
+    "get_host")         
+        netmgr_zabbix_login
+        func_get_host "$@"       ;;
+    "add_host")         
+        netmgr_zabbix_login
+        func_add_host "$@"       ;;
+    "remove_host")      
+        netmgr_zabbix_login
+        func_remove_host "$@"    ;;
+    "show_groups")      
+        netmgr_zabbix_login
+        func_show_groups         ;;
+    "show_templates")   
+        netmgr_zabbix_login
+        func_show_templates      ;;
+    *)                  
+        func_show_help           ;;
     esac
 }
 
