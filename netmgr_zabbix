@@ -115,12 +115,13 @@ parse_interfaces() {
 # Internal functions
 netmgr_zabbix_login(){
     [ $VERBOSE -eq 1 ] && echo "Logging into zabbix..."
+    local response
 
     if [ ! -z "$ZABBIX_AUTH_TOKEN" ]; then
         [ $VERBOSE -eq 1 ] && echo "Skipping... Has already logged in before"
     fi
 
-    ZABBIX_AUTH_TOKEN=$(curl -s -k -X POST -H 'Content-Type: application/json' -d '{
+    [ $VERBOSE -eq 1 ] && echo '{
         "jsonrpc": "2.0",
         "method": "user.login",
         "params": {
@@ -129,7 +130,21 @@ netmgr_zabbix_login(){
         },
         "id": 1,
         "auth": null
-    }' $ZABBIX_SERVER_URL | jq -r '.result')
+    }'
+
+    response=$(curl -s -k -X POST -H 'Content-Type: application/json' -d '{
+        "jsonrpc": "2.0",
+        "method": "user.login",
+        "params": {
+            "username": "'$ZABBIX_USERNAME'",
+            "password": "'$ZABBIX_PASSWORD'"
+        },
+        "id": 1,
+        "auth": null
+    }' $ZABBIX_SERVER_URL)
+
+    [ $VERBOSE -eq 1 ] && echo "$response"
+    ZABBIX_AUTH_TOKEN=$(echo $response | jq -r '.result')
 
     if [ "$ZABBIX_AUTH_TOKEN" == "null" ] || [ -z "$ZABBIX_AUTH_TOKEN" ]; then
         echo "Error: Authentication failed"
@@ -192,7 +207,7 @@ netmgr_add_host_node(){
         }'
     [ $VERBOSE -eq 1 ] && echo $response
     host_id=$(echo $response | jq -r '.result.hostids[0]')
-    echo "$host_id,$hostname" >> "output"
+    # echo "$host_id,$hostname" >> "output"
 
     if [ -n "$host_id" ]; then
         echo "Host added successfully with ID: $host_id"
@@ -296,6 +311,14 @@ netmgr_remove_host(){
     local response
 
     local json=""
+    [ $VERBOSE -eq 1 ] && echo '{
+        "auth": "'"$ZABBIX_AUTH_TOKEN"'",
+        "jsonrpc": "2.0",
+        "method": "host.delete",
+        "params": ['"$host_ids"'],
+        "id": 1
+    }'
+
     response=$(curl -s -k -X POST $ZABBIX_SERVER_URL -H 'Content-Type: application/json' \
         -d '{
         "auth": "'"$ZABBIX_AUTH_TOKEN"'",
@@ -305,13 +328,6 @@ netmgr_remove_host(){
         "id": 1
     }')
 
-    [ $VERBOSE -eq 1 ] && echo '{
-        "auth": "'"$ZABBIX_AUTH_TOKEN"'",
-        "jsonrpc": "2.0",
-        "method": "host.delete",
-        "params": ['"$host_ids"'],
-        "id": 1
-    }'
     [ $VERBOSE -eq 1 ] && echo $response
     host_count=$(echo $response | jq '.result.hostids | length')
 
@@ -325,6 +341,17 @@ netmgr_set_host_status(){
     local response
 
     local json=""
+    [ $VERBOSE -eq 1 ] && echo '{
+        "auth": "'"$ZABBIX_AUTH_TOKEN"'",
+        "jsonrpc": "2.0",
+        "method": "host.update",
+        "params": {
+            "hostid": "'"$host_ids"'",
+            "status": '"$status"'
+        },
+        "id": 1
+    }'
+
     response=$(curl -s -k -X POST $ZABBIX_SERVER_URL -H 'Content-Type: application/json' \
         -d '{
         "auth": "'"$ZABBIX_AUTH_TOKEN"'",
@@ -337,16 +364,6 @@ netmgr_set_host_status(){
         "id": 1
     }')
 
-    [ $VERBOSE -eq 1 ] && echo '{
-        "auth": "'"$ZABBIX_AUTH_TOKEN"'",
-        "jsonrpc": "2.0",
-        "method": "host.update",
-        "params": {
-            "hostid": "'"$host_ids"'",
-            "status": '"$status"'
-        },
-        "id": 1
-    }'
     [ $VERBOSE -eq 1 ] && echo $response
 
     return 0
@@ -612,6 +629,7 @@ Example file format at ./var/netmgr_zabbix.data.example
         host_ids=$(echo $RETVAL | jq -r '.result[].hostid' | paste -sd, -)
         consume_retval
         
+        [ $VERBOSE -eq 1 ] && echo "Removing $host_ids"
         netmgr_remove_host "$host_ids"
         [ $? -ne 0 ] && exit $?
 
