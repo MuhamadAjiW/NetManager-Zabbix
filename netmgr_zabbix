@@ -369,38 +369,6 @@ netmgr_set_host_status(){
     return 0
 }
 
-netmgr_add_host_file(){
-    [ $VERBOSE -eq 1 ] && echo "Adding hosts of node from file=$1..."
-    local file="$1"
-    local int_file="$2"
-    local total=0
-    local success=0
-
-    if [ ! -f "$file" ]; then
-        echo "Error: File $file not found"
-        exit 1
-    fi
-    
-    if [ ! -f "$int_file" ]; then
-        echo "Error: File $int_file not found"
-        exit 1
-    fi
-
-    while IFS=',' read -r hostname templates groups interfaces; do
-        if [[ -z "$hostname" || "$hostname" == "#"* ]]; then
-            continue
-        fi
-        netmgr_add_host_node "$hostname" "$templates" "$groups" "$interfaces" "$int_file"
-        [ $? -eq 0 ] && ((success++))
-        ((total++))
-
-    done < "$file"
-
-    echo "Added $success/$total Nodes from $file."
-
-    return 0
-}
-
 # Commands
 func_show_help(){
         echo "
