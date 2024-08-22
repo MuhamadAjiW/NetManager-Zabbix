@@ -480,10 +480,11 @@ func_get_host(){
         case "$opt" in
         h|\?)
             echo "
-Usage: netmgr_zabbix get_host [-f file path] [-i hostname]
+Usage: netmgr_zabbix get_host [-f file path] or [-i hostname]
 
 Required:
     -f <file path>                : The file for bulk fetching nodes
+    or
     -i <hostname>                 : Hostname to fetch
 
 Example file format at ./var/netmgr_zabbix.data.example
@@ -551,10 +552,11 @@ func_remove_host(){
         case "$opt" in
         h|\?)
             echo "
-Usage: netmgr_zabbix remove_host [-f file path] [-i hostname]
+Usage: netmgr_zabbix remove_host [-f file path] or [-i hostname]
 
 Required:
     -f <file path>                : The file for bulk node removal
+    or
     -i <hostname>                 : Hostname to remove
 
 Example file format at ./var/netmgr_zabbix.data.example
@@ -639,10 +641,11 @@ func_set_host_status(){
         case "$opt" in
         h|\?)
             echo "
-Usage: netmgr_zabbix "$RETVAL"_host [-f file path] [-i hostname]
+Usage: netmgr_zabbix "$RETVAL"_host [-f file path] or [-i hostname]
 
 Required:
     -f <file path>                : The file for bulk node to $RETVAL
+    or
     -i <hostname>                 : Hostname to $RETVAL
 
 Example file format at ./var/netmgr_zabbix.data.example
